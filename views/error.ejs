@@ -1,0 +1,11 @@
+<html>
+    <head>
+        <title>Error Code : <%= status %></title>
+    </head>
+    <body>
+        <h1>Error (<%= status %>) : <%= message %></h1>
+        <h2>Stack Trace :</h2>
+        <pre><%= error.stack %></pre>
+    </body>
+</html>
+
