@@ -2,9 +2,8 @@
 
 ## Building
 
-The frontend base React from Facebook, React visit:
-* [Github React](https://github.com/facebook/react)
-* [Website React](https://reactjs.org/)
+The backend base koa web framework, React visit:
+* [Github Koa](https://github.com/koajs/koa)
 
 You need to reconfigure the following items:
 * [Development Config](src/config/dev.dist.ts)
