@@ -41,6 +41,8 @@ export class mx {
     public static ACCOUNT_TYPENAME_PHONE     = "PHONE NUMBER"; 
     public static ACCOUNT_TYPENAME_EMAIL     = "EMAIL ADDRESS";
 
+    public static NICK_NAME_MAXLEN           = 15+1;
+
     //user privilege
     public static PRIVILEGE_LEVEL_BANNED     = 0; //封号
     public static PRIVILEGE_LEVEL_GUEST      = 1; //访客

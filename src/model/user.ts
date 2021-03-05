@@ -1,4 +1,4 @@
-
+//2021-01-28 移除账号表里的用户信息，用户信息按独立表
 
 import mx from "../utils";
 import * as database from "../database/database";
@@ -6,6 +6,8 @@ import * as redis from "../redis/redis";
 import * as mx_crypto from "../utils/crypto";
 
 import * as email_client from "../utils/email";
+import {XRegionToAny} from "../utils/country";
+
 import config from "../config";
 
 
@@ -130,24 +132,75 @@ export namespace ServerModel {
     // 邮箱注册
     // privilege: 0-封号, 1-游客, 2-已注册用户, 3-用户
     if(account.type_index == mx.defs.ACCOUNT_TYPE_EMAIL) {
+      let account_uid = -1;
+      let auth_uid = -1;
+      let user_uid = -1;
+      let money_uid = -1;
+
+      // 账号添加
       sql = `
+      -- Account : 
       INSERT INTO t_account
         (user_nid, user_nm, user_pw, user_email, privilege)
       VALUES
         (?, ?, ?, ?, (SELECT id FROM t_privilege WHERE level = ? AND status = 1 LIMIT 1))
       ;
-      -- Maybe insert last id bugs
-      INSERT INTO t_auth
-        (user_id, user_nid, auth_code, auth_hash, shared_key, api_key)
-      VALUES
-        (LAST_INSERT_ID(), ?, NULL, NULL, ?, ?)
-      ;
       `;
       ret = await db.fragment(db_query, sql, [
           account.number, account.name, user_pw, account.email, mx.defs.PRIVILEGE_LEVEL_REGISTERED,
-          account.number, shared_key, api_key
-        ], (err, res) => { error = err; affectRowsCount = res.effect_count || -1; });
-      if(ret == false || affectRowsCount < 0) {
+        ], (err, res) => { error = err; affectRowsCount = res.effect_count || -1; account_uid = res.first.insertId; });
+      if(ret == false || affectRowsCount < 0 || account_uid < 0) {
+        await db.rollback(db_query.query);
+        return error || new database.Database.DBError(-1, "Database Unknow Error");
+      }
+
+      // 验证信息添加
+      sql = `
+      -- Auth : Maybe insert last id bugs
+      INSERT INTO t_auth
+        (user_id, user_nid, auth_code, auth_hash, shared_key, api_key)
+      VALUES
+        (?, ?, NULL, NULL, ?, ?)
+      ;
+      `;
+      ret = await db.fragment(db_query, sql, [
+        account_uid, account.number, shared_key, api_key
+      ], (err, res) => { error = err; affectRowsCount = res.effect_count || -1; auth_uid = res.first.insertId; });
+      if(ret == false || affectRowsCount < 0 || auth_uid < 0) {
+        await db.rollback(db_query.query);
+        return error || new database.Database.DBError(-1, "Database Unknow Error");
+      }
+
+      // 用户信息添加
+      sql = `
+      -- User : Maybe insert last id bugs
+      INSERT INTO t_user
+        (user_id, user_nid, auth_id)
+      VALUES
+        (?, ?, ?)
+      ;
+      `;
+      ret = await db.fragment(db_query, sql, [
+        account_uid, account.number, auth_uid
+      ], (err, res) => { error = err; affectRowsCount = res.effect_count || -1; user_uid = res.first.insertId; });
+      if(ret == false || affectRowsCount < 0 || user_uid < 0) {
+        await db.rollback(db_query.query);
+        return error || new database.Database.DBError(-1, "Database Unknow Error");
+      }
+
+      // 钱包信息
+      sql = `
+      -- User : Maybe insert last id bugs
+      INSERT INTO t_money
+        (user_id, user_nid, auth_id)
+      VALUES
+        (?, ?, ?)
+      ;
+      `;
+      ret = await db.fragment(db_query, sql, [
+        account_uid, account.number, auth_uid
+      ], (err, res) => { error = err; affectRowsCount = res.effect_count || -1; money_uid = res.first.insertId; });
+      if(ret == false || affectRowsCount < 0 || money_uid < 0) {
         await db.rollback(db_query.query);
         return error || new database.Database.DBError(-1, "Database Unknow Error");
       }
@@ -314,6 +367,14 @@ export namespace ServerModel {
     
     user_data.auth_data = result;
 
+    // 获取详细用户属性
+    result = await _DB_UserDataDetailGet(db_query, user_data, user_data.auth_data);
+    if(!result) {
+      await db.rollback(db_query.query);
+      return new database.Database.DBError(mx.err.ERRORCODE_INTERNAL, mx.err.ERROR_INTERNAL);
+    }
+    user_data = { ...user_data, ...result };
+
     //
     await db.commit(db_query.query);
 
@@ -371,7 +432,7 @@ export namespace ServerModel {
     let sql = `
     SELECT 
       a.user_id, a.user_nid, a.user_nm, a.user_email, a.user_phone, a.user_pw, a.create_time AS user_createtime,
-      a.nickname AS user_nick,
+      u.nickname AS user_nick,
       b.auth_id, b.auth_code, b.auth_hash, b.auth_ipaddress, b.auth_region, b.auth_device, 
       b.activated, b.activated_time, 
       b.verified_phone, b.verified_phone_time, b.verifying_phone, b.verifying_phone_time, 
@@ -384,9 +445,15 @@ export namespace ServerModel {
     LEFT JOIN t_auth b
 	  ON
       b.user_id = a.user_id
+    LEFT JOIN t_user u
+    ON
+      u.user_id = a.user_id
     WHERE
       -- private get data
-      (99 = ? and a.user_id = ? and a.user_nid = ?) or
+      -- NID get data for value: 99
+      (99 = ? and a.user_nid = ?) or
+      -- UID,NID get data for value: 90 - 98, default: 90
+      (90 <= ? and ? < 99 and a.user_id = ? and a.user_nid = ?) or
       -- register only check account name
       (0 = ? and a.user_nid = ? and a.user_nm = ?) or
       -- login check mid, name, email, phone
@@ -399,7 +466,8 @@ export namespace ServerModel {
       a.status >= 1;
     `;
     let ret = await db.fragment(tdb, sql, [
-      index, account.uid, account.number,
+      index, account.number, //非UID，仅仅是MID获取用户信息
+      index, index, account.uid, account.number,
       index, account.number, account.name,
       index, account.number, account.name, account.email, account.phone
     ], 
@@ -416,7 +484,7 @@ export namespace ServerModel {
     if(result.type_index == 0){
       result.type_name = "register";
     // 内部调用
-    } else if(result.type_index == 99) {
+    } else if(result.type_index >= 90) {
       result.type_name = "private";
       let temp:any = null;
       sql=`
@@ -491,6 +559,77 @@ export namespace ServerModel {
     return result;
   }
 
+  export async function _DB_UserDataDetailGet(tdb, user_data:any, auth_data?:any) {
+    let result:any = null;
+    let error:any = null;
+
+    let sql = `
+    SELECT 
+      u.id AS uid,
+      u.nickname AS user_nick,
+      u.gender AS user_gender,
+      u.age AS user_age,
+      u.country AS user_country,
+      u.region AS user_region,
+      u.maxim AS user_maxim,
+      u.public_level AS user_public_level,
+      u.following AS following,
+      u.followers AS followers
+    FROM main.t_user u
+    WHERE
+      u.user_id = ? AND u.user_nid = ?;
+    `;
+    let ret = await db.fragment(tdb, sql, [
+      user_data.user_id, user_data.user_nid
+    ], (err, res) => { error = err; result = res.first; });
+    if(ret == false || error) {
+        return null;
+    }
+
+    // 如果不存在，按NULL对象
+    if(!result) { result = {}; }
+    delete result.uid;
+    let detail_data = result;
+    detail_data.follow_level = 0;
+
+    // 如果已经验证
+    if(auth_data) {
+
+      // 关注
+      sql = `
+        SELECT  f.id AS fid, IF(f.user_id = ?, 0, 1) AS level
+        FROM main.t_follow f
+        WHERE 
+          ((f.user_id = ? AND f.user_nid = ?) AND
+          (f.following_id = ? AND f.following_nid = ?) AND f.status > 0) OR
+          ((f.user_id = ? AND f.user_nid = ?) AND
+          (f.following_id = ? AND f.following_nid = ?) AND f.status > 0)
+        ;
+      `;
+      ret = await db.fragment(tdb, sql, [
+        user_data.user_id,
+        user_data.user_id, user_data.user_nid,
+        auth_data.user_id, auth_data.user_nid,
+        auth_data.user_id, auth_data.user_nid,
+        user_data.user_id, user_data.user_nid
+      ], (err, res) => { error = err; result = res.values; });
+      if(ret == false || error) {
+          return null;
+      }
+
+      for(let i = 0; i < result.length; i ++) {
+        if(result[i].fid > 0 && result[i].level == 0) {
+          detail_data.follow_level = detail_data.follow_level | 0x01; // 他/她是粉丝
+        }
+        if(result[i].fid > 0 && result[i].level == 1) {
+          detail_data.follow_level = detail_data.follow_level | 0x02; // 你是粉丝
+        }
+      }
+    }
+    //
+    return detail_data;
+  }
+
   async function _DB_UserVerifying(tdb, index, data, activate = true) {
     
     // 8位字符串, 包括小写字母, 数字
@@ -518,8 +657,8 @@ export namespace ServerModel {
     let auth_uid = -1;
     // 插入验证记录
     let sql = `
-    INSERT INTO t_auth_history
-      (auth_id, expired_time, auth_name, auth_code, auth_hash, auth_ipaddress, auth_region, auth_device, t_auth_history.desc, t_auth_history.status)
+    INSERT INTO t_history
+      (auth_id, expired_time, auth_name, auth_code, auth_hash, auth_ipaddress, auth_region, auth_device, t_history.desc, t_history.status)
     VALUES
       (?, DATE_ADD(now(), interval ? second), ?, ?, ?, ?, NULL, ?, ?, ?)
     ;
@@ -650,8 +789,8 @@ export namespace ServerModel {
 
     // 更新验证记录
     sql = `
-    INSERT INTO t_auth_history
-      (auth_id, expired_time, auth_name, auth_code, auth_hash, auth_ipaddress, auth_region, auth_device, t_auth_history.desc, t_auth_history.status)
+    INSERT INTO t_history
+      (auth_id, expired_time, auth_name, auth_code, auth_hash, auth_ipaddress, auth_region, auth_device, t_history.desc, t_history.status)
     VALUES
       (?, DATE_ADD(now(), interval ? second), ?, ?, ?, ?, NULL, ?, ?, ?)
     ;
@@ -669,9 +808,9 @@ export namespace ServerModel {
     sql = `
     SELECT 
       create_time, auth_ipaddress, auth_region, auth_device
-    FROM t_auth_history
+    FROM t_history
     WHERE 
-      auth_id = ?
+      auth_id = ? and status = 2
     ORDER BY create_time DESC
     LIMIT 5;`;
     ret = await db.fragment(tdb, sql, [data.auth_id], 
@@ -912,6 +1051,7 @@ export namespace ServerModel {
     return data;
   }
 
+  // 此处公开只针对用户自身
   export function UserDataGetWithPublic(data) {
     //
     delete data.type_index;
@@ -935,7 +1075,7 @@ export namespace ServerModel {
     delete data.auth_device;
     delete data.auth_region;
     delete data.auth_expired;
-    delete data.auth_time;
+    //delete data.auth_time;
     delete data.auth_used;
     delete data.auth_time_expired;
 
@@ -944,6 +1084,46 @@ export namespace ServerModel {
       data.auth_data.user_id && delete data.auth_data.user_id;
     }
     return data;
+  }
+
+  // 公开将对任何人可见
+  export function UserDataGetWithPublicAny(data) {
+    // 首先。需要符合自身可见
+    let result = UserDataGetWithPublic(data);
+
+    result.user_lasttime = result.auth_time;
+    delete result.auth_time;
+
+    // 删除针对自身的一些数据
+    delete result.activated;
+    delete result.activated_time;
+    delete result.verified_phone;
+    delete result.verified_phone_time;
+    delete result.verifying_phone;
+    delete result.verifying_phone_time;
+    delete result.verified_email;
+    delete result.verified_email_time;
+    delete result.verifying_email;
+    delete result.verifying_email_time;
+    delete result.shared_key;
+    delete result.api_key;
+
+    if(result.user_nick) {
+      delete result.user_nm;
+    }
+
+    // 
+    if((result.user_public_level & 0x01) == 0) {
+      if(result.user_email) {
+        result.user_email = mx.mask2String(result.user_email, 2, 6);
+      }
+    } 
+    if((result.user_public_level & 0x02) == 0) {
+      if(result.user_phone) {
+        result.user_phone = mx.mask2String(result.user_phone, 3, 2);
+      }
+    } 
+    return result;
   }
 
   //
@@ -971,7 +1151,7 @@ export namespace ServerModel {
       TIMESTAMPDIFF(SECOND, NOW(), IF(isnull(expired_time), "${mx.defs.DATETIME_EXPIRED_MAX}", expired_time)) AS auth_expired,
       auth_name, auth_code, auth_hash,
       auth_ipaddress, auth_region, auth_device
-    FROM t_auth_history
+    FROM t_history
     WHERE 
       auth_id = ? AND auth_hash = ?
       AND status = 0
@@ -1090,7 +1270,7 @@ export namespace ServerModel {
       TIMESTAMPDIFF(SECOND, NOW(), IF(isnull(expired_time), "${mx.defs.DATETIME_EXPIRED_MAX}", expired_time)) AS auth_expired,
       auth_name, auth_code, auth_hash,
       auth_ipaddress, auth_region, auth_device
-    FROM t_auth_history
+    FROM t_history
     WHERE 
       (1 = ? AND id = ? AND auth_id = ?) OR
       (2 = ? AND id = ? AND auth_id = ?)
@@ -1158,7 +1338,7 @@ export namespace ServerModel {
       type_name:mx.defs.ACCOUNT_TYPENAME_EMAIL,
     };
 
-    result = await _DB_UserDataGet(db_query, 99, account);
+    result = await _DB_UserDataGet(db_query, 90, account);
     if(!result) {
       await db.rollback(db_query.query);
       if(result == null) {
@@ -1198,7 +1378,7 @@ export namespace ServerModel {
     let sql = ``;
     if(user_data.verifying_email > 0) {
       sql = `
-      UPDATE t_auth_history SET
+      UPDATE t_history SET
         expired_time = NULL, used_time = NULL, status = 1
       WHERE id = ? and auth_id = ?;
       `;
@@ -1241,7 +1421,7 @@ export namespace ServerModel {
       type_index:-1,
       type_name:"",
     };
-    result = await _DB_UserDataGet(db_query, 99, account);
+    result = await _DB_UserDataGet(db_query, 90, account);
     if(!result) {
       await db.rollback(db_query.query);
       if(result == null) {
@@ -1326,7 +1506,7 @@ export namespace ServerModel {
 
     // 完成后, 将该条记录标记为已经使用
     sql = `
-    UPDATE t_auth_history SET
+    UPDATE t_history SET
       used_time = NOW(), status = 1
     WHERE id = ? and auth_id = ? and auth_code = ?;
       `;
@@ -1369,4 +1549,296 @@ export namespace ServerModel {
     return true;
   }
 
+
+  // 
+  export async function UserPublicData(auth_data, public_data) {
+    //
+    if(!mx.checkAccountNumber(public_data.user_nid)) {
+      return new database.Database.DBError(mx.err.ERRORCODE_OPERATION_INVALID, mx.err.ERROR_OPERATION_INVALID);
+    }
+
+    //
+    let db_query = await db.begin();
+    if(db_query.err) {
+      return db_query.err;
+    }
+
+    let result:any = null;
+    let error:any = null;
+    let affectRowsCount:number = -1;
+
+    let account = {
+      uid:public_data.user_id,
+      number:public_data.user_nid,
+      name:"",
+      email:"",
+      phone:"",
+      current:"",
+      type_index:-1,
+      type_name:"",
+    };
+    result = await _DB_UserDataGet(db_query, 99, account);
+    if(!result) {
+      await db.rollback(db_query.query);
+      if(result == null) {
+        return new database.Database.DBError(-102, "Account not exist");
+      } else {
+        return new database.Database.DBError(mx.err.ERRORCODE_INTERNAL, mx.err.ERROR_INTERNAL);
+      }
+    }
+
+    let user_data = result;
+
+    user_data.is_editor = false;
+    if(auth_data) {
+      if(auth_data.user_uid == user_data.user_uid && auth_data.user_nid == user_data.user_nid) {
+        user_data.is_editor = true;
+      }
+    }
+
+    result = await _DB_UserDataDetailGet(db_query, user_data, auth_data);
+    if(!result) {
+      await db.rollback(db_query.query);
+      if(result == null) {
+        return new database.Database.DBError(-102, "Account not exist");
+      } else {
+        return new database.Database.DBError(mx.err.ERRORCODE_INTERNAL, mx.err.ERROR_INTERNAL);
+      }
+    }
+    user_data = { ...user_data, ...result };
+
+
+    //
+    await db.commit(db_query.query);
+    return user_data;
+  }
+
+  async function _DB_ProfileEditing(tdb, auth_data, profile_data) {
+
+    //
+    let result:any = null;
+    let error:any = null;
+    let effectRowsCount:number = -1;
+
+    // 更新当前验证信息
+    // 必须验证code，相同才更新, 更新状态为0
+    let sql = `
+    UPDATE t_account SET
+      user_nm = ?
+      WHERE user_id = ? and user_nid = ? and status >= 1
+    `;
+    let ret = await db.fragment(tdb, sql, [
+      profile_data.account_name,
+      auth_data.user_id, auth_data.user_nid
+    ], (err, res) => { error = err; effectRowsCount = res.effect_count || -1; });
+    if(ret == false || effectRowsCount < 0) {
+      return false;
+    }
+    
+    // 发生改变，添加进记录
+    let uid = -1;
+    if(effectRowsCount > 0) {
+      sql = `
+      INSERT INTO t_history
+        (auth_id, expired_time, auth_name, auth_code, auth_hash, auth_ipaddress, auth_region, auth_device, 
+        value, t_history.desc, t_history.status)
+      VALUES
+        (?, NULL, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+      ;
+      `;
+      ret = await db.fragment(tdb, sql, [
+        auth_data.auth_id, auth_data.user_nm, 
+        auth_data.auth_code, auth_data.auth_hash, auth_data.auth_ipaddress, auth_data.auth_device,
+        profile_data.account_name,
+        "changed_user_nm", 10
+      ], (err, res) => { error = err; effectRowsCount = res.effect_count || -1; uid = res.first.insertId; });
+      if(ret == false || effectRowsCount < 0 || uid < 0) {
+        return false;
+      }
+    }
+
+    let regions = XRegionToAny(profile_data.region || "");
+    let country = regions.country;
+    let region = regions.region;
+
+    // 更新用户基本属性
+    sql = `
+    UPDATE t_user SET
+      nickname = ?, gender = ?, age = ?, country = ?, region = ?,
+      update_time = NOW()
+      WHERE user_id = ? and user_nid = ? and auth_id = ?
+    `;
+    ret = await db.fragment(tdb, sql, [
+      profile_data.nick_name, profile_data.gender, profile_data.age, country, region,
+      auth_data.user_id, auth_data.user_nid, auth_data.auth_id,
+    ], (err, res) => { error = err; effectRowsCount = res.effect_count || -1; });
+    if(ret == false || effectRowsCount < 0) {
+      return false;
+    }
+
+    // 发生改变，添加进记录
+    uid = -1;
+    if(effectRowsCount > 0) {
+      sql = `
+      INSERT INTO t_history
+        (auth_id, expired_time, auth_name, auth_code, auth_hash, auth_ipaddress, auth_region, auth_device, 
+        value, t_history.desc, t_history.status)
+      VALUES
+        (?, NULL, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+      ;
+      `;
+      ret = await db.fragment(tdb, sql, [
+        auth_data.auth_id, auth_data.user_nm, 
+        auth_data.auth_code, auth_data.auth_hash, auth_data.auth_ipaddress, auth_data.auth_device,
+        `${profile_data.nick_name}; ${profile_data.age}; ${profile_data.region}`,
+        "changed_profile", 12
+      ], (err, res) => { error = err; effectRowsCount = res.effect_count || -1; uid = res.first.insertId; });
+      if(ret == false || effectRowsCount < 0 || uid < 0) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  // 用户编辑属性
+  export async function ProfileEditing(auth_data, profile_data) {
+    //
+    if(!mx.checkAccountNumber(profile_data.user_nid)) {
+      return new database.Database.DBError(mx.err.ERRORCODE_OPERATION_INVALID, mx.err.ERROR_OPERATION_INVALID);
+    }
+    
+    // 必须登录，验证ID和用户ID一致
+    if(!auth_data || auth_data.user_nid != profile_data.user_nid) {
+        return new database.Database.DBError(mx.err.ERRORCODE_OPERATION_INVALID, mx.err.ERROR_OPERATION_INVALID);
+    }
+    
+    // 校验账号和昵称
+    if(!profile_data.account_name || profile_data.account_name.length == 0) { profile_data.account_name = null; }
+    else {
+      profile_data.account_name = profile_data.account_name.trim();
+      let rv = mx.checkAccountName(profile_data.account_name, 6, mx.defs.ACCOUNT_NAME_MAXLEN);
+      if(!rv) {
+        return new database.Database.DBError(mx.err.ERRORCODE_OPERATION_INVALID, mx.err.ERROR_OPERATION_INVALID);
+      }
+      profile_data.account_name = rv;
+    }
+
+    if(!profile_data.nick_name || profile_data.nick_name.length == 0) { profile_data.nick_name = null; }
+    else {
+      profile_data.nick_name = profile_data.nick_name.trim();
+      let rv = mx.checkNickName(profile_data.nick_name, 6, mx.defs.ACCOUNT_NAME_MAXLEN);
+      if(!rv) {
+        return new database.Database.DBError(mx.err.ERRORCODE_OPERATION_INVALID, mx.err.ERROR_OPERATION_INVALID);
+      }
+      profile_data.nick_name = rv;
+    }
+
+    if(profile_data.region && mx.checkSafetyCharacters(profile_data.region, 2)) {
+      return new database.Database.DBError(mx.err.ERRORCODE_OPERATION_INVALID, mx.err.ERROR_OPERATION_INVALID);
+    }
+
+    if(!profile_data.account_name) {
+      profile_data.account_name = `mid${auth_data.user_nid}`;
+    }
+    if(!profile_data.age) {
+      profile_data.age = 0;
+    }
+    console.info(auth_data, profile_data);
+
+    //
+    let result:any = null;
+    let error:any = null;
+    let affectRowsCount:number = -1;
+  
+    let db_query = await db.begin();
+    if(db_query.err) {
+      return db_query.err;
+    }
+
+    // 无论是否标识为已删除，都不能重复
+    let sql = `
+    SELECT 
+      user_nid, user_nm, user_email, user_phone, create_time
+    FROM t_account a
+    WHERE
+      a.user_nm = ? and NOT( user_id = ? and user_nid = ?)
+    ;
+    `;
+    let ret = await db.fragment(db_query, sql, [ 
+      profile_data.account_name, 
+      auth_data.user_id, auth_data.user_nid,
+    ], (err, res) => { error = err; result = res.first; });
+    if(ret == false) {
+      await db.rollback(db_query.query);
+      return new database.Database.DBError(mx.err.ERRORCODE_OPERATION_ERROR, mx.err.ERROR_OPERATION_ERROR);
+    }
+    if(result) {
+      await db.rollback(db_query.query);
+      return new database.Database.DBError(-102, "Account already exist");
+    }
+
+    // 昵称是唯一的，不可以重复
+    sql = `
+    SELECT 
+      user_id, user_nid, nickname AS user_nick, create_time
+    FROM t_user u
+    WHERE
+      u.nickname = ? and NOT( u.user_id = ? and u.user_nid = ?)
+    ;
+    `;
+    ret = await db.fragment(db_query, sql, [ 
+      profile_data.nick_name, 
+      auth_data.user_id, auth_data.user_nid,
+    ], (err, res) => { error = err; result = res.first; });
+    if(ret == false) {
+      await db.rollback(db_query.query);
+      return new database.Database.DBError(mx.err.ERRORCODE_OPERATION_ERROR, mx.err.ERROR_OPERATION_ERROR);
+    }
+    if(result) {
+      await db.rollback(db_query.query);
+      return new database.Database.DBError(-102, "Nickname already exist");
+    }
+
+
+    //
+    result = await _DB_ProfileEditing(db_query, auth_data, profile_data);
+    if (!result) {
+      await db.rollback(db_query.query);
+      return new database.Database.DBError(mx.err.ERRORCODE_OPERATION_ERROR, mx.err.ERROR_OPERATION_ERROR);
+    }
+    
+    let account = {
+      uid:auth_data.user_id,
+      number:auth_data.user_nid,
+      name:"",
+      email:"",
+      phone:"",
+      current:"",
+      type_index:-1,
+      type_name:"",
+    };
+
+    result = await _DB_UserDataGet(db_query, 1, account);
+    if(!result) {
+      await db.rollback(db_query.query);
+      return new database.Database.DBError(mx.err.ERRORCODE_OPERATION_ERROR, mx.err.ERROR_OPERATION_ERROR);
+    }
+    let user_data = result;
+
+    // 获取详细用户属性
+    result = await _DB_UserDataDetailGet(db_query, user_data, auth_data);
+    if(!result) {
+      await db.rollback(db_query.query);
+      return new database.Database.DBError(mx.err.ERRORCODE_INTERNAL, mx.err.ERROR_INTERNAL);
+    }
+
+    user_data = { ...user_data, ...result };
+
+    //
+    await db.commit(db_query.query);
+
+
+    return user_data;
+  }
 }

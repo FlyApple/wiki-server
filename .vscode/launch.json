@@ -5,13 +5,15 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "server",
             "type": "node",
             "request": "launch",
-            "name": "server",
             "skipFiles": [
                 "<node_internals>/**"
             ],
-            "program": "${workspaceFolder}\\bin\\main"
+            "program": "${workspaceFolder}/bin/main",
+            "cwd": "${workspaceFolder}",
+            "protocol": "inspector",
         }
     ]
 }

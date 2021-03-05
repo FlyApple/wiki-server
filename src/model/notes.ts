@@ -34,17 +34,20 @@ export namespace ServerParser {
         let sql = `
         SELECT 
             l.id AS uid, l.nid, l.uuid, 
-            a.user_id AS user_id, a.user_nid AS user_nid,  a.user_nm, a.nickname AS user_nick,
+            a.user_id AS user_id, a.user_nid AS user_nid,  a.user_nm, 
+            u.nickname AS user_nick,
             l.topping, l.create_time, l.update_time, 
             l.crypto_level, l.private_level, l.content, l.tags,
             l.view_count, l.shared_count, l.like_count, l.favorites_count, l.commit_count,
             IFNULL((SELECT 1 WHERE l.user_id = ? AND l.user_nid = ? AND l.auth_id = ? ), 0) AS is_editor,
             l.status
         FROM t_note_list l
-        LEFT JOIN
-            t_account a
+        LEFT JOIN t_account a
         ON
             l.user_id = a.user_id AND l.user_nid = a.user_nid
+        LEFT JOIN t_user u
+        ON
+            u.user_id = a.user_id
         WHERE
             ${sqlp}
         ORDER BY l.create_time DESC LIMIT 1
@@ -72,20 +75,29 @@ export namespace ServerParser {
         if(last_data.page > 0) {
             sqlp = `(${sqlp}) AND ${last_data.uid} > l.id AND (SELECT 1 AS RESULT FROM t_note_list WHERE id = ${last_data.uid} AND nid = "${last_data.nid}") = 1`;
         }
+
+        // 过滤特定用户的NOTE列表
+        if(last_data.mid) {
+            sqlp = `l.user_nid = ${last_data.mid} AND (${sqlp})`;
+        }
+
         let sql = `
         SELECT 
             l.id AS uid, l.nid, l.uuid, 
-            a.user_id AS user_id, a.user_nid AS user_nid,  a.user_nm, a.nickname AS user_nick,
+            a.user_id AS user_id, a.user_nid AS user_nid,  a.user_nm, 
+            u.nickname AS user_nick,
             l.topping, l.create_time, l.update_time, 
             l.crypto_level, l.private_level, l.content, l.tags,
             l.view_count, l.shared_count, l.like_count, l.favorites_count, l.commit_count,
             IFNULL((SELECT 1 WHERE l.user_id = ? AND l.user_nid = ? AND l.auth_id = ? ), 0) AS is_editor,
             l.status
         FROM t_note_list l
-        LEFT JOIN
-            t_account a
+        LEFT JOIN t_account a
         ON
             l.user_id = a.user_id AND l.user_nid = a.user_nid
+        LEFT JOIN t_user u
+        ON
+            u.user_id = a.user_id            
         WHERE
             ${sqlp}
         ORDER BY l.create_time DESC LIMIT 0, ${PAGE_NOTES_ITEMS_MAXNUM}
@@ -144,16 +156,19 @@ export namespace ServerParser {
         let sql = `
         SELECT 
             l.id AS uid, l.nid, l.uuid, l.note_uid, l.note_nid,
-            a.user_id AS user_id, a.user_nid AS user_nid, a.user_nm, a.nickname AS user_nick,
+            a.user_id AS user_id, a.user_nid AS user_nid, a.user_nm, 
+            u.nickname AS user_nick,
             l.create_time, l.update_time, 
             l.crypto_level, l.content, l.like_count, l.reply_count,
             IFNULL((SELECT 1 WHERE l.user_id = ? AND l.user_nid = ? AND l.auth_id = ? ), 0) AS is_editor,
             l.status
         FROM t_note_commitlist l
-        LEFT JOIN
-            t_account a
+        LEFT JOIN t_account a
         ON
             l.user_id = a.user_id AND l.user_nid = a.user_nid
+        LEFT JOIN t_user u
+        ON
+            u.user_id = a.user_id   
         WHERE
             ${sqlp}
         ORDER BY l.create_time ${order} LIMIT 0, ${count}
@@ -195,7 +210,8 @@ export namespace ServerParser {
         let sql = `
         SELECT 
             l.id AS uid, l.nid, l.uuid, 
-            a.user_id AS user_id, a.user_nid AS user_nid, a.user_nm, a.nickname AS user_nick,
+            a.user_id AS user_id, a.user_nid AS user_nid, a.user_nm, 
+            u.nickname AS user_nick,
             l.create_time, l.update_time, 
             l.crypto_level, l.content, l.like_count, 
             IFNULL((SELECT 1 WHERE l.user_id = ? AND l.user_nid = ? AND l.auth_id = ? ), 0) AS is_editor,
@@ -203,10 +219,12 @@ export namespace ServerParser {
             l.replyto_id AS replyto_uid, l.replyto_nid AS replyto_nid, 
             l.status
         FROM t_note_commitlist l
-        LEFT JOIN
-            t_account a
+        LEFT JOIN t_account a
         ON
             l.user_id = a.user_id AND l.user_nid = a.user_nid
+        LEFT JOIN t_user u
+        ON
+            u.user_id = a.user_id   
         WHERE
             ${sqlp}
         ORDER BY l.create_time ${order} LIMIT 0, ${count}
@@ -820,6 +838,12 @@ export namespace ServerParser {
         let page = last_data.page;
         if(page < 0) { page = 0; }
         if(page >= 10000 ) { page = 9999; }
+
+        //
+        if(last_data.mid && !mx.checkAccountNumber(last_data.mid)) {
+            return new database.Database.DBError(mx.err.ERRORCODE_INTERNAL, mx.err.ERROR_INTERNAL);
+        }
+
         // 检测长度和必要格式，防止被注入
         if((last_data.uid > 0 && /^[\d]{4,12}$/g.test(last_data.uid) == false) || (last_data.nid.length > 0 && /^[0-9a-zA-Z]{6,32}$/g.test(last_data.nid) == false)) {
             return new database.Database.DBError(mx.err.ERRORCODE_INTERNAL, mx.err.ERROR_INTERNAL);

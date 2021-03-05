@@ -39,6 +39,8 @@ export default class RouterServer extends Router {
         server_parser.AuthInitParser(this._router);
         server_parser.UserLogoutParser(this._router, {auth: true});
         server_parser.UserVerifyingParser(this._router, {auth: true});
+        server_parser.UserPublicDataParser(this._router);
+        server_parser.UserProfileEditingParser(this._router, {auth: true});
 
         // Notes
         server_parser.InitListNotesParser(this._router);
@@ -49,5 +51,9 @@ export default class RouterServer extends Router {
         server_parser.ViewNoteItemParser(this._router);
         server_parser.InitNoteCommitListParser(this._router);
         server_parser.InitNoteReplyCommitListParser(this._router);
+
+        // FOLLOW
+        server_parser.FollowingMeParser(this._router, {auth: true});
+        server_parser.FollowingCancelParser(this._router, {auth: true});
     }
 };

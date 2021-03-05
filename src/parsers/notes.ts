@@ -200,6 +200,7 @@ export namespace ServerParser {
       }
 
       let last_data = {
+        mid: ctx.query.mid || null,
         page: ctx.query.page || 0,
         uid: ctx.query.last_uid || 0,
         nid: (ctx.query.last_nid || "").trim(),

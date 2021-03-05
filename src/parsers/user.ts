@@ -217,4 +217,63 @@ export namespace ServerParser {
     };
   }
 
+  //
+  export function UserPublicDataParser(options?:base_parser.ServerParser.Options) : koa.Middleware {
+    return async (ctx, next) => {
+      if(await base_parser.ServerParser.BaseParser(ctx, options) < 0) {
+        if(! await ctx.check_auth_data_failed(ctx.server_options)) {
+          await next(); 
+        }
+        return ; 
+      }
+
+      // 强制校验登录状态
+      let ret = await base_parser.ServerParser.AuthCheck(ctx, true);
+      if(!ret) {
+        ctx.server_options.auth_data = undefined;
+      }
+      let auth_data = ctx.server_options.auth_data;
+
+      // 
+      let public_data = {
+        user_nid: (ctx.query.mid || "").trim(),
+      };
+
+      // 
+      let result:any = await user_model.ServerModel.UserPublicData(auth_data, public_data);
+      if (await ctx.check_result_failed(result)) {
+        return ;
+      }
+
+      await ctx.send_json_code_result(200, mx.defs.S_SUCCESS, user_model.ServerModel.UserDataGetWithPublicAny(result)); 
+    };
+  }
+
+  // 用户属性修改
+  export function UserProfileEditingParser(options?:base_parser.ServerParser.Options) : koa.Middleware {
+    return async (ctx, next) => {
+      if(await base_parser.ServerParser.BaseParser(ctx, options) < 0) {
+        if(!await ctx.check_auth_data_failed(ctx.server_options)) {
+          await next(); 
+        }
+        return ; 
+      }
+
+      //
+      let user_data:any = {};
+      let auth_data = ctx.server_options.auth_data;
+      let profile_data:any = { ...ctx.body };
+      profile_data.user_nid = profile_data.mid.trim();
+      delete profile_data.mid;
+
+      let result = await user_model.ServerModel.ProfileEditing(auth_data, profile_data);
+      if (await ctx.check_result_failed(result)) {
+        return ;
+      }
+
+      user_data = result;
+      await ctx.send_json_code_result(200, mx.defs.S_SUCCESS, user_model.ServerModel.UserDataGetWithPublic(user_data), null);    
+    };
+  }
+
 }

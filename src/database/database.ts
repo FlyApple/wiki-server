@@ -4,6 +4,7 @@
 import * as mysql from 'mysql';
 import xerror from '../utils/error';
 import config from "../config";
+import { Z_STREAM_END } from 'zlib';
 
 //
 export namespace Database {
@@ -100,12 +101,27 @@ export namespace Database {
   
   export type CBResultFunc = (err: null| DBError, data:CBResultData) => void;
 
+  //
+  export let LogFunc = (level, value) => {
+    switch(level) {
+      case 3 : console.error(value); break;
+      case 2 : console.warn(value); break;
+      default : console.info(value); break;
+    }
+  }
 
+  //
   export abstract class Database_Base<T> implements Database_Interface {
     public static CONN_MAXNUM:number = 10;
     protected abstract _pool:any = null;
 
     protected _connUsedCount:number = 0;
+
+    //
+    protected _log(level, value) {
+
+      LogFunc && LogFunc(level, `[Database] ${value}`);
+    }
 
     //
     public abstract rollback(query:T) : Promise<CBQueryResult>;
@@ -127,11 +143,14 @@ export namespace Database {
       multipleStatements: true
     });
 
+    private _updateTick:number = 0;
+    private _updateCount:number = 0;
+
     constructor() {
       super();
 
-      console.info(`[Database] Connect ${this._pool.config.connectionConfig.host}:${this._pool.config.connectionConfig.port}`);
-      console.info(`[Database] Datebase ${this._pool.config.connectionConfig.database} - (${this._pool.config.connectionConfig.user})`);
+      this._log(0, `Connect ${this._pool.config.connectionConfig.host}:${this._pool.config.connectionConfig.port}`);
+      this._log(0, `Datebase ${this._pool.config.connectionConfig.database} - (${this._pool.config.connectionConfig.user})`);
     }
 
     private async _alloc_query() : Promise<CBQueryResult> {
@@ -203,14 +222,17 @@ export namespace Database {
               query = null;
           }
 
+          let timeout = false;
           if(e.err != undefined) {
-            e = e.err;
-            console.error(`[Database] <Execute> Error : (${e.name}) ${e.message}`);
+            e = e.err; timeout = e.message.indexOf("ETIMEDOUT") >= 0;
+            this._log(3, `<Execute> Error : (${e.name}) ${e.message}`);
             //console.error(` TRACE:${e.stack}`);
           } else {
-            console.error(`[Database] <Execute> Error :  ${e}`);
+            this._log(3, `<Execute> Error :  ${e}`);
           }
-          console.error(` SQL:${sql}`);
+          if(!timeout) {
+            this._log(3, ` SQL:${sql}`);
+          }
           return false;
       }
       return true;
@@ -290,14 +312,17 @@ export namespace Database {
             callback(null, CBResultDataNew({values: result.vals, fields: result.fields}));
           }
       } catch (e){
+          let timeout = false;
           if(e.err != undefined) {
-            e = e.err;
-            console.error(`[Database] <Execute> Error : (${e.name}) ${e.message}`);
+            e = e.err; timeout = e.message.indexOf("ETIMEDOUT") >= 0;
+            this._log(3, `<Execute> Error : (${e.name}) ${e.message}`);
             //console.error(` TRACE:${e.stack}`);
           } else {
-            console.error(`[Database] <Execute> Error :  ${e}`);
+            this._log(3, `<Execute> Error :  ${e}`);
           }
-          console.error(` SQL:${sql}`);
+          if(!timeout) {
+            this._log(3, ` SQL:${sql}`);
+          }
           return false;
       }
       return true;
@@ -315,10 +340,14 @@ export namespace Database {
       let sql = `
         show status like '%innodb%';
       `;
+
       let result:any|null = null;
       let error:DBError|null = null;
       if(!await this.execute(sql, [], (err, data) => { error = err; result = data.values; })) {
-        console.error(`[Database] (update) : Error ${error}`);
+        let time = new Date().getTime() - tick;
+        this._log(0, `(update) : (count: ${this._updateCount}, ${time} ms) ERROR: ${error}`);
+
+        this._updateCount ++;
         return false;
       }
 
@@ -329,38 +358,30 @@ export namespace Database {
       });
 
       let time = new Date().getTime() - tick;
-      console.info(`[Database] (status) : (${Date.now()},${time} ms) SELECTED: ${data.innodb_rows_read}, INSERTED: ${data.innodb_rows_inserted}`);
+      this._log(0, `(status) : (count: ${this._updateCount}, ${time} ms) SELECTED: ${data.innodb_rows_read}, INSERTED: ${data.innodb_rows_inserted}`);
+
+      this._updateCount ++;
+      return true;
     }
 
-    protected async _update(interval:number = 1000, callback?:Function) {
-      let timer = setTimeout(async () => {
-        clearTimeout(timer);
+    public async update() {
+      if(Date.now() - this._updateTick >= 15 * 1000) {
+        this._updateTick = Date.now();
 
         let result = await this._updateImpl();
-        if(callback) { callback(result); }
+        if(result) {
 
-        this._update(interval, callback);
-      }, interval);
-      return true;
-    }
-
-    public async update(interval:number = 1000, callback?:Function) {
-      if(!await this._update(interval, callback)) {
-        return false;
+        }
       }
-      return true;
     }
   }
 }
 
 let database_mysql_instance;
 
-export let Database_GetInstance = (callback?:Function) =>{
+export let Database_GetInstance = () =>{
   if(!database_mysql_instance) {
     database_mysql_instance = new Database.Database_MYSQL();
-    database_mysql_instance.update(10*1000, (result) => {
-      callback && callback(result);
-    });
   }
   return database_mysql_instance;
 };

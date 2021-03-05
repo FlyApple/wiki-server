@@ -8,19 +8,26 @@ import * as http from "http";
 import * as https from "https";
 import * as koa from "koa";
 
+import * as database from "./database/database";
 import * as redis from "./redis/redis";
 
-import singleton from "./utils/singleton";
+import {Singleton, NewInstance, GetInstance} from "./utils/singleton";
+import {Logger} from "./utils/logger";
 
 import config from "./config/index";
 import RouterServer from "./router/routerserver";
 import mx from "./utils";
 import * as perform from "./utils/performance";
 
+
 //
-export default class Application extends singleton<Application> {
+export default class Application extends Singleton<Application> {
     private _root:string = "./";
     private _mode:"development"|"production"  = "production";
+    private _logger: Logger|null = null;
+
+    private _cache: any;
+    private _database: any;
 
     private http_server:any;
     private https_server:any;
@@ -32,19 +39,56 @@ export default class Application extends singleton<Application> {
 
         this._root = process.cwd();
         this._mode = process.env.NODE_ENV == "development" ? "development" : "production";
+
+        this._logger = NewInstance(Logger);
+        this._logger.Init(this._root);
+        this._logger.AddLoggerItem("info", true, false, false, Logger.LEVEL_ALL);
+        this._logger.AddLoggerItem("server", false, true, false, Logger.LEVEL_ALL);
+        this._logger.AddLoggerItem("redis", true, true, true, Logger.LEVEL_ALL);
+        this._logger.AddLoggerItem("mysql", true, true, true, Logger.LEVEL_ALL);
     }
 
-    init() : boolean {
+    public init() : boolean {
         //
-        console.info("Mode : " + (this._mode == "development" ? "(development)" : "(production)"));
-        console.info("Work Root : " + this._root);
+        this._logger?.info("Mode : " + (this._mode == "development" ? "(development)" : "(production)"));
+        this._logger?.info("Work Root : " + this._root);
 
         //
-        let cache = redis.Cache_GetInstance(2, config.redis);
-        if(!cache) {
-          return false;
+        redis.RedisCache.LogFunc = (level, value) => {
+          if(this._logger) {
+            if(level == 3) {
+              this._logger.log(Logger.LEVEL_ERROR, "redis", value);
+            } else if(level == 2) {
+              this._logger.log(Logger.LEVEL_WARN, "redis", value);
+            } else if(level == 1) {
+              this._logger.log(Logger.LEVEL_INFO, "redis", value);
+            } else {
+              this._logger.log(Logger.LEVEL_INFO, "info", value);
+            }
+          }
         }
-        
+        redis.Cache_GetInstance(2, config.redis).then((v) => {
+          this._cache = v;
+        });
+
+
+        //
+        database.Database.LogFunc = (level, value) => {
+          if(this._logger) {
+            if(level == 3) {
+              this._logger.log(Logger.LEVEL_ERROR, "mysql", value);
+            } else if(level == 2) {
+              this._logger.log(Logger.LEVEL_WARN, "mysql", value);
+            } else if(level == 1) {
+              this._logger.log(Logger.LEVEL_INFO, "mysql", value);
+            } else {
+              this._logger.log(Logger.LEVEL_INFO, "info", value);
+            }
+          }
+        }
+        this._database = database.Database_GetInstance();
+
+        //
         if (!this.initServer()) {
           return false;
         }
@@ -52,7 +96,7 @@ export default class Application extends singleton<Application> {
         return true;
     }
 
-    initServer() : boolean {
+    private initServer() : boolean {
         let http_app:koa = new koa();
         let https_app:koa = new koa();
         http_app.proxy = config.cdn;
@@ -84,29 +128,63 @@ export default class Application extends singleton<Application> {
         //
         this.http_router.init(this._root, this._mode);
         this.https_router.init(this._root, this._mode);
+
+        //
+        this.http_server.listen(config.server.legacy_port, config.server.bind_address, (err, address) => {
+          if(err) {
+            this.onHTTPError(err);
+            return;
+          }
+
+          this.onHTTPListening();
+        });
+        this.https_server.listen(config.server.secure_port, config.server.bind_address, (err, address) => {
+          if(err) {
+            this.onHTTPSError(err);
+            return;
+          }
+
+          this.onHTTPSListening();
+        });
         return true;
     }
 
-    run() : number {
-        this.http_server.listen(config.server.legacy_port, config.server.bind_address, (err, address) => {
-            if(err) {
-              this.onHTTPError(err);
-              return;
-            }
+    public run() : number {
+      let tick = Date.now();
+      return this.runImpl(tick);
+    }
 
-            this.onHTTPListening();
-          });
-        this.https_server.listen(config.server.secure_port, config.server.bind_address, (err, address) => {
-            if(err) {
-              this.onHTTPSError(err);
-              return;
-            }
+    private runImpl(tick:number) : number {
+      let result = 0;
 
-            this.onHTTPSListening();
-          });
+      let last = tick;
+      let status = setTimeout(() => {
+        clearTimeout(status);
 
-        //
-        return 0;
+        let now = Date.now();
+        if(now - last < 30) {
+          this.runImpl(last);
+          return;
+        }
+
+        let idle = {
+          last:last, now:now, time: (now - last)
+        };
+
+        result = this.mainloop(idle);
+        if(result < 0) {
+          return ;
+        }
+
+        this.runImpl(now);
+      }, 20);
+      return result;
+    }
+
+    protected mainloop(idle:any) : number {
+      this._cache && this._cache.update();
+      this._database && this._database.update();
+      return 0;
     }
 
     protected onHTTPListening() {
@@ -128,13 +206,13 @@ export default class Application extends singleton<Application> {
     protected handleHTTPListening(server:http.Server) {
         let addr = server.address() as net.AddressInfo;
         let bind = addr.address + ":" + addr.port;
-        console.info("(HTTP) Listening : " + bind);
+        this._logger?.info("(HTTP) Listening : " + bind);
     }
 
     protected handleHTTPSListening(server:https.Server) {
         let addr = server.address() as net.AddressInfo;
         let bind = addr.address + ":" + addr.port;
-        console.info("(HTTPS) Listening : " + bind);
+        this._logger?.info("(HTTPS) Listening : " + bind);
     }
 
     protected handleHTTPError(server:net.Server, error:any) {
@@ -148,11 +226,11 @@ export default class Application extends singleton<Application> {
         // handle specific listen errors with friendly messages
         switch (error.code) {
           case 'EACCES':
-            console.error(bind + ' requires elevated privileges');
+            this._logger?.error(bind + ' requires elevated privileges');
             process.exit(1);
             break;
           case 'EADDRINUSE':
-            console.error(bind + ' is already in use');
+            this._logger?.error(bind + ' is already in use');
             process.exit(1);
             break;
           default:

@@ -54,6 +54,25 @@ export class mx {
         return `${n.toString()}`;
     }
 
+    // 将部分字符MASK处理，掩盖信息
+    public static mask2String = (t:string, l:number = 2, r:number = 1) => {
+        let v = t;
+        if(t.length == 0 || l <= 0 && r <= 0) { return v; }
+
+        if(t.length <= l + r) {
+            let length = l + t.length; v = v.padStart(length, "X");
+            length = l + t.length + r; v = v.padEnd(length, "Y");
+        }
+
+        let v0 = t.substring(l, t.length - r);
+        let v1 = v0.replace(/./g, "*");
+        if(v0.length < 4) {
+            v1 = `****`;
+        }
+        v = v.replace(v0, v1);
+        return v;
+    }
+
     //
     public static timestampMS = (dt?:Date) => {
         return dt ? Math.round(dt.getTime()) : Math.round(Date.now());
@@ -252,13 +271,16 @@ export class mx {
     // 2 : +,-,=
     public static checkSafetyCharacters = (value, level = 0) => {
         if(mx.checkValueNull(value)) { return false; }
-        if(/[!@#$%^&*:;'"?~`,./\\|]/g.test(value)) {
+        if(/[!@#$%^&*:;'"?~`/\\|]/g.test(value)) {
             return true;
         }
         if(level >= 1 && /[[\]()<>{}]/g.test(value)) {
             return true;
         }
-        if(level >= 2 && /[+\-=_ ]/g.test(value)) {
+        if(level >= 2 && /[+=]/g.test(value)) {
+            return true;
+        }
+        if(level >= 3 && /[ .,_-]/g.test(value)) {
             return true;
         }
         if(level >= 10 && /[·~！@#￥%……&*、‘”？：；，。]/g.test(value)) {
@@ -332,6 +354,19 @@ export class mx {
             return false;
         }
         
+        return name;
+    }
+
+    // 不可以有符合,昵称中不可以出现三个以上的重复字符
+    public static checkNickName = (name, min = 4, max = 16) : string|boolean => {
+        if (mx.checkValueNull(name)) { return false; }
+        
+        name = name.trim();
+        if(name.length < min || name.length >= max || 
+            /^[^( |\t|\-|_|[|\]{|}|<|>|=|+|*|^|~|`|!|?|,|.|;|:|"|'|@|#|$|%|&)]+$/g.test(name) === false ||
+            /([0-9a-zA-Z])\1{3}/g.test(name) == true) {
+            return false;
+        }
         return name;
     }
 
@@ -531,6 +566,23 @@ export class mx {
             return new Error('Bank Address error');
         }
         return true;
+    }
+
+    // 合并地址; 国家 + 地区（省，州，市）+ 子地区（市，区，县，镇)
+    // 
+    public static RegionCombination = (country, province = "", city = "", type = 0) => {
+        // 按英文地址合并
+        let value = ``;
+        if(type == 1) {
+            if(city && city.length > 0) { value = `${city}`; }
+            if(province && province.length > 0) { value = `${province}, ${value}`; }
+            if(country && country.length > 0) { value = `${country}, ${value}`; }
+        } else {
+            if(city && city.length > 0) { value = `${city}`; }
+            if(province && province.length > 0) { value = `${value}, ${province}`; }
+            if(country && country.length > 0) { value = `${value}, ${country}`; }
+        }
+        return value;
     }
 }
 

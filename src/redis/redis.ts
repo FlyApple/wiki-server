@@ -2,7 +2,7 @@
 import * as process from "process";
 import * as Redis from "redis";
 
- 
+
 // 必须截获异常，避免因为连接异常导致问题
 Redis.RedisClient.prototype.index = 0;
 Redis.RedisClient.prototype.on_error_impl = Redis.RedisClient.prototype.on_error;
@@ -10,7 +10,7 @@ Redis.RedisClient.prototype.on_error = function (error) {
     try { 
         this.on_error_impl(error)
     } catch (e) {
-        console.warn("[Redis] ("+e.name+") : " +  "Exception : " + e.message);
+        RedisCache.LogFunc && RedisCache.LogFunc(3, "("+e.name+") : " +  "Exception : " + e.message);
     }
 }
 Redis.RedisClient.prototype.connection_gone_impl = Redis.RedisClient.prototype.connection_gone;
@@ -18,12 +18,20 @@ Redis.RedisClient.prototype.connection_gone = function (why, error) {
     try { 
         this.connection_gone_impl(why, error)
     } catch (e) {
-        console.warn("[Redis] ("+e.name+") : " +  "Exception : " + e.message);
+        RedisCache.LogFunc && RedisCache.LogFunc(3, "("+e.name+") : " +  "Exception : " + e.message);
     }
 }
 
 //
 export class RedisCache {
+    public static LogFunc = (level, value) => {
+        switch(level) {
+            case 3 : console.error(value); break;
+            case 2 : console.warn(value); break;
+            default : console.info(value); break;
+        }
+    }
+
     protected _name:string = "redis_client";
     protected _options:any;
     protected _redisPool:Array<Redis.RedisClient> = [];
@@ -69,9 +77,6 @@ export class RedisCache {
     }
 
     public init(name?:string, callback?:Function) {
-        if(!this._update()) {
-            return false;
-        }
 
         this._name = name || `redis_${process.ppid}`;
         this._pingCount = 0;
@@ -89,11 +94,7 @@ export class RedisCache {
             log = `[${this._name}${index >= 0 ? ` - ${index}` : ``}] ${text}`;
         }
         
-        switch(level) {
-            case 3 : console.error(log); break;
-            case 2 : console.warn(log); break;
-            default : console.info(log); break;
-        }
+        RedisCache.LogFunc && RedisCache.LogFunc(level, log);
     }
 
     private _create(index, options) {
@@ -121,16 +122,10 @@ export class RedisCache {
         return Math.max(options.attempt * 1000, 10000);
     }
 
-    protected _update(interval = 1000) {
-        let timer = setTimeout(() => {
-            clearTimeout(timer);
-
-            this.handleUpdate();
-
-            this._update(interval);
-        }, interval);
-        return true;
+    public async update() {
+        this.handleUpdate();
     }
+
     private _alloc() {
         if(this._unusedPool.length > 0) {
             let client = this._unusedPool.pop() || null;

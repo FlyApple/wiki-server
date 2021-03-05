@@ -8,6 +8,7 @@ import * as parser_index from "../parsers/index";
 import * as parser_settings from "../parsers/settings";
 import * as parser_auth from "../parsers/auth";
 import * as parser_user from "../parsers/user";
+import * as parser_follow from "../parsers/follow";
 import * as parser_notes from "../parsers/notes";
 
 //
@@ -46,8 +47,16 @@ export let UserLogoutParser = (router:koa_router, options?:any) => {
   router.get("/user/logout", parser_user.ServerParser.UserLogoutParser(options));
 }
 
+export let UserProfileEditingParser = (router:koa_router, options?:any) => {
+  router.post("/user/profile/editing", parser_user.ServerParser.UserProfileEditingParser(options));
+}
+
 export let UserVerifyingParser = (router:koa_router, options?:any) => {
   router.get("/user/verifying", parser_user.ServerParser.UserVerifyingParser(options));
+}
+
+export let UserPublicDataParser = (router:koa_router, options?:any) => {
+  router.get("/user/public/data", parser_user.ServerParser.UserPublicDataParser(options));
 }
 
 // Notes 
@@ -74,4 +83,14 @@ export let InitNoteCommitListParser = (router:koa_router, options?:any) => {
 }
 export let InitNoteReplyCommitListParser = (router:koa_router, options?:any) => {
   router.get("/notes/replylist", parser_notes.ServerParser.InitNoteReplyCommitListParser(options));
+}
+
+
+//FOLLOW
+export let FollowingMeParser = (router:koa_router, options?:any) => {
+  router.get("/follow/following", parser_follow.ServerParser.FollowingParser(options));
+}
+
+export let FollowingCancelParser = (router:koa_router, options?:any) => {
+  router.get("/follow/cancel", parser_follow.ServerParser.CancelParser(options));
 }

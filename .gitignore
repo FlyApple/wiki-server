@@ -106,8 +106,20 @@ dist
 
 #
 keys/
+docs/private/
 src/config/dev.ts
 src/config/prod.ts
-dkim_bind.txt
-dkim_dns.txt
-dkim_private_key.txt
+docs/priavte/mail/mysql-virtual-mailbox-domains.cf
+docs/priavte/dkim_bind.txt
+docs/priavte/dkim_dns.txt
+docs/priavte/dkim_private_key.txt
+docs/priavte/mail/bounce.cf
+docs/priavte/mail/dovecot-sql.conf.ext
+docs/priavte/mail/https-prod.key
+docs/priavte/mail/https-prod.pem
+docs/priavte/mail/mails-ca.cer
+docs/priavte/mail/mails.sql
+docs/priavte/mail/mysql-virtual-mailbox-maps.cf
+docs/priavte/readme.txt
+docs/priavte/mail/mysql_recipient_access
+docs/priavte/mail/mysql-virtual-alias-maps.cf

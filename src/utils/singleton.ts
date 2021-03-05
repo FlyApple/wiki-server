@@ -1,7 +1,11 @@
-import { exception } from "console";
-import { type } from "os";
 
+//
+let _singletonInstances:any = { };
+
+//
 export class SingletonBase {
+
+    //
     protected _clazzTypeName:string = "";
     public get clazzTypeName() { return this._clazzTypeName; }
 
@@ -10,20 +14,32 @@ export class SingletonBase {
     }
 }
 
-export default class Singleton<_T extends SingletonBase> extends SingletonBase {
-    protected static _singletonInstance:any| undefined = undefined;
+export class Singleton<_T extends SingletonBase> extends SingletonBase {
+    //
     constructor() {
         super();
         
-        //
-        if(Singleton._singletonInstance) {
+        let instance = _singletonInstances[this._clazzTypeName];
+        if(instance) {
             throw new Error(`${this.clazzTypeName} Singleton is setting.`);
             return ;
         }
-        Singleton._singletonInstance = this;
+        _singletonInstances[this._clazzTypeName] = this;
     }
+}
 
-    public get getSingleton() : _T {
-        return Singleton._singletonInstance;
+//
+export function NewInstance<_T extends SingletonBase>(clazz: new() => _T) : _T {
+    return new clazz();
+}
+
+export function GetInstance<_T extends SingletonBase>(clazz: new() => _T, alloc:boolean = false) : _T| null {
+    let instance = _singletonInstances[clazz.name];
+    if(!instance) {
+        if(alloc) {
+            return NewInstance<_T>(clazz);
+        }
+        return null;
     }
+    return instance;
 }
